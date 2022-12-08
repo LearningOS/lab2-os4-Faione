@@ -23,6 +23,7 @@ mod fs;
 mod process;
 
 use fs::*;
+pub use process::TaskInfo;
 use process::*;
 
 /// handle syscall exception with `syscall_id` and other arguments

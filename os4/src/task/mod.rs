@@ -14,9 +14,14 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfo;
+use crate::timer::get_time_us;
 use crate::trap::TrapContext;
+use alloc::string::String;
 use alloc::vec::Vec;
 use lazy_static::*;
 pub use switch::__switch;
@@ -79,6 +84,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.inner.first_start_time = get_time_us();
+
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -101,6 +108,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].task_status = TaskStatus::Exited;
+        inner.tasks[current].inner.first_start_time = get_time_us();
     }
 
     /// Find next task to run and return task id.
@@ -127,6 +135,33 @@ impl TaskManager {
         inner.tasks[inner.current_task].get_trap_cx()
     }
 
+    fn update_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].inner.syscall_times[syscall_id] += 1;
+    }
+
+    fn get_current_task_info(&self) -> TaskInfo {
+        let inner = self.inner.exclusive_access();
+        let task = &inner.tasks[inner.current_task];
+
+        let time = match task.task_status {
+            TaskStatus::Exited => task.inner.first_start_time,
+            _ => get_time_us() - task.inner.first_start_time,
+        };
+
+        let mut syscall_times = [0; MAX_SYSCALL_NUM];
+        for (idx, v) in task.inner.syscall_times.iter().enumerate() {
+            syscall_times[idx] = *v as u32;
+        }
+
+        TaskInfo {
+            status: task.task_status,
+            syscall_times: syscall_times,
+            time: time / 1_000,
+        }
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -135,6 +170,9 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+            if inner.tasks[next].inner.first_start_time == 0 {
+                inner.tasks[next].inner.first_start_time = get_time_us();
+            }
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -146,6 +184,27 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    fn memory_map(
+        &self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        map_perm: MapPermission,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current]
+            .memory_set
+            .insert_framed_area_result(start_va, end_va, map_perm)
+    }
+
+    fn memeory_unmap(&self, start_va: VirtAddr, end_va: VirtAddr) -> Result<(), String> {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current]
+            .memory_set
+            .remove_area_result(start_va, end_va)
     }
 }
 
@@ -190,4 +249,24 @@ pub fn current_user_token() -> usize {
 /// Get the current 'Running' task's trap contexts.
 pub fn current_trap_cx() -> &'static mut TrapContext {
     TASK_MANAGER.get_current_trap_cx()
+}
+
+pub fn current_task_info() -> TaskInfo {
+    TASK_MANAGER.get_current_task_info()
+}
+
+pub fn update_syscall(syscall_id: usize) {
+    TASK_MANAGER.update_syscall(syscall_id)
+}
+
+pub fn memory_map(
+    start_va: VirtAddr,
+    end_va: VirtAddr,
+    map_perm: MapPermission,
+) -> Result<(), String> {
+    TASK_MANAGER.memory_map(start_va, end_va, map_perm)
+}
+
+pub fn memeory_unmap(start_va: VirtAddr, end_va: VirtAddr) -> Result<(), String> {
+    TASK_MANAGER.memeory_unmap(start_va, end_va)
 }
