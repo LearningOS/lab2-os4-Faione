@@ -391,9 +391,6 @@ impl MapArea {
         for vpn in self.vpn_range {
             self.map_one_result(page_table, vpn)?;
         }
-
-        // self.map_one_result(page_table, self.vpn_range.get_end())?;
-
         Ok(())
     }
 
@@ -402,8 +399,6 @@ impl MapArea {
         for vpn in self.vpn_range {
             self.unmap_one_result(page_table, vpn)?;
         }
-
-        // self.unmap_one_result(page_table, self.vpn_range.get_end())?;
         Ok(())
     }
 }
